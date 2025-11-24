@@ -2,206 +2,96 @@
 
 set -e
 
-echo ""
-echo "=============================="
-echo "      ZORO TROJAN SETUP       "
-echo "=============================="
-echo ""
+PROJECT_ID="qwiklabs-gcp-01-18d229542ace"
+REGION="us-central1"
 
-# Colors
-GREEN="\033[0;32m"
-YELLOW="\033[1;33m"
-NC="\033[0m"
+echo "🔧 إعداد Google Cloud..."
+gcloud config set project $PROJECT_ID >/dev/null
 
-log() { echo -e "${GREEN}[+]${NC} $1"; }
-ask() { read -rp "$1: " ans; echo "$ans"; }
+# === إعداد المتغيرات ===
+read -p "أدخل توكن البوت: " BOT_TOKEN
+read -p "أدخل آيدي التليغرام الذي يستقبل السيرفر: " ADMIN_ID
+read -p "أدخل كلمة سر Trojan (اتركها فارغة لتوليد كلمة سر تلقائية): " TROJAN_PASS
 
-# -------------------------------
-#   USER INPUTS
-# -------------------------------
-
-TOKEN=$(ask "ادخل توكن البوت (Telegram BOT Token)")
-ADMIN_ID=$(ask "ادخل ايدي الادمن (Telegram ID)")
-SERVER_NAME=$(ask "ادخل اسم السيرفر (مثال: ZORO-TROJAN)")
-PASSWORD=$(ask "ادخل كلمة المرور (اتركه فارغ يولد تلقائيا)")
-
-if [[ -z "$PASSWORD" ]]; then
-  PASSWORD=$(openssl rand -hex 8)
-  log "تم توليد كلمة مرور تلقائية: $PASSWORD"
+if [ -z "$TROJAN_PASS" ]; then
+    TROJAN_PASS=$(openssl rand -hex 8)
+    echo "تم توليد كلمة سر تلقائياً: $TROJAN_PASS"
 fi
 
-PROJECT_ID=$(ask "ادخل Project ID (اتركه فارغ لاختيار تلقائي)")
-if [[ -z "$PROJECT_ID" ]]; then
-  PROJECT_ID="zoro-$RANDOM"
-  log "تم إنشاء PROJECT ID تلقائياً: $PROJECT_ID"
-fi
+UUID=$(uuidgen)
+PORT=8080
+PATH_WS="/zoro"
 
-echo ""
-echo "اختار المنطقة (Region):"
-echo "1) us-central1"
-echo "2) europe-west1"
-echo "3) asia-south1"
-REGION_CHOICE=$(ask "اختر رقم المنطقة")
-
-case $REGION_CHOICE in
-  1) REGION="us-central1" ;;
-  2) REGION="europe-west1" ;;
-  3) REGION="asia-south1" ;;
-  *) REGION="us-central1" ;;
-esac
-
-echo ""
-echo "اختار CPU:"
-echo "1) 1 vCPU"
-echo "2) 2 vCPU"
-CPU_CHOICE=$(ask "اختر رقم")
-
-case $CPU_CHOICE in
-  1) CPU="1" ;;
-  2) CPU="2" ;;
-  *) CPU="1" ;;
-esac
-
-echo ""
-echo "اختار RAM:"
-echo "1) 512MB"
-echo "2) 1GB"
-echo "3) 2GB"
-RAM_CHOICE=$(ask "اختر رقم")
-
-case $RAM_CHOICE in
-  1) RAM="512Mi" ;;
-  2) RAM="1Gi" ;;
-  3) RAM="2Gi" ;;
-  *) RAM="1Gi" ;;
-esac
-
-# -------------------------------
-#   DIRECTORY
-# -------------------------------
-mkdir -p zoro-trojan
+# إنشاء مجلد العمل
+rm -rf zoro-trojan
+mkdir zoro-trojan
 cd zoro-trojan
 
-# -------------------------------
-#   DOCKERFILE
-# -------------------------------
+# === Dockerfile ===
 cat <<EOF > Dockerfile
-FROM alpine:latest
-
-RUN apk add --no-cache curl bash nginx openssl
-
-WORKDIR /app
-
-COPY config.json /app/config.json
-COPY index.html /var/www/html/index.html
-
-EXPOSE 443
-
-CMD ["bash", "-c", "nginx && /app/trojan-go -config /app/config.json"]
+FROM teddysun/xray:latest
+COPY config.json /etc/xray/config.json
+COPY index.html /www/index.html
+CMD ["xray", "-config", "/etc/xray/config.json"]
 EOF
 
-# -------------------------------
-#   CONFIG.JSON (TROJAN)
-# -------------------------------
+# === صفحة مزيفة ===
+cat <<EOF > index.html
+<html><body><h1 style="text-align:center;margin-top:50px;font-family:sans-serif;">ZORO SERVER ACTIVE ✓</h1></body></html>
+EOF
+
+# === ملف config.json ===
 cat <<EOF > config.json
 {
-  "run_type": "server",
-  "local_addr": "0.0.0.0",
-  "local_port": 443,
-  "password": ["$PASSWORD"],
-  "log_level": 1,
-  "ssl": {
-    "cert": "/etc/ssl/cert.pem",
-    "key": "/etc/ssl/key.pem",
-    "fallback_port": 80,
-    "sni": "cdn.jsdelivr.net"
-  },
-  "websocket": {
-    "enabled": true,
-    "path": "/zoro",
-    "host": "cdn.jsdelivr.net"
-  }
+  "inbounds": [
+    {
+      "port": ${PORT},
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {
+            "password": "${TROJAN_PASS}",
+            "email": "zoro"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "${PATH_WS}"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    { "protocol": "freedom" }
+  ]
 }
 EOF
 
-# -------------------------------
-#   HTML PAGE
-# -------------------------------
-cat <<EOF > index.html
-<!DOCTYPE html>
-<html>
-<head>
-<title>ZORO SERVER</title>
-<style>
-body {
-  background: black;
-  color: #0f0;
-  font-family: monospace;
-  text-align: center;
-  margin-top: 120px;
-}
-h1 {
-  font-size: 40px;
-  text-shadow: 0 0 15px #0f0;
-}
-</style>
-</head>
-<body>
-<h1>ZORO TROJAN SERVER</h1>
-<p>Server Active ✓</p>
-</body>
-</html>
-EOF
+echo "🚀 نشر التطبيق على Cloud Run..."
 
-# -------------------------------
-#   DEPLOY CLOUD RUN
-# -------------------------------
-log "جاري تفعيل Cloud Run…"
+gcloud run deploy zoro-trojan \
+    --source . \
+    --region $REGION \
+    --allow-unauthenticated \
+    --memory 512Mi \
+    --cpu 1 \
+    --port $PORT >/dev/null
 
-gcloud projects create $PROJECT_ID >/dev/null 2>&1 || true
-gcloud config set project $PROJECT_ID >/dev/null
-gcloud services enable run.googleapis.com >/dev/null
+URL=$(gcloud run services describe zoro-trojan --region $REGION --format 'value(status.url)')
 
-log "بناء الصورة…"
-gcloud builds submit --tag gcr.io/$PROJECT_ID/zoro-trojan .
+# === إنشاء رابط Trojan النهائي ===
+TROJAN_LINK="trojan://${TROJAN_PASS}@${URL#https://}:${PORT}?type=ws&path=${PATH_WS}&security=none#ZORO-TROJAN"
 
-log "نشر Cloud Run…"
-URL=$(gcloud run deploy zoro-trojan \
-  --image gcr.io/$PROJECT_ID/zoro-trojan \
-  --platform managed \
-  --region $REGION \
-  --allow-unauthenticated \
-  --cpu $CPU \
-  --memory $RAM \
-  --port 443 \
-  --quiet \
-  | grep "URL:" | awk '{print $2}')
+echo "🔗 رابط التروجان جاهز:"
+echo "$TROJAN_LINK"
 
-log "تم نشر السيرفر بنجاح!"
-log "الرابط: $URL"
+# === إرسال للبوت ===
+curl -s "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+    -d chat_id="${ADMIN_ID}" \
+    -d text="🔥 تم إنشاء سيرفر Trojan بنجاح
 
-# -------------------------------
-#   TROJAN LINK
-# -------------------------------
-TROJAN_LINK="trojan://$PASSWORD@$URL:443?type=ws&host=cdn.jsdelivr.net&path=/zoro#${SERVER_NAME}"
+🔗 ${TROJAN_LINK}"
 
-log "إرسال المعلومات للبوت…"
-
-MESSAGE="🔥 *ZORO TROJAN SERVER READY* 🔥
-
-*Name:* $SERVER_NAME
-*URL:* $URL
-*Password:* $PASSWORD
-*Protocol:* TROJAN WS TLS
-*Region:* $REGION
-
-🔗 *Trojan Link:*  
-$TROJAN_LINK
-"
-
-curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
-  -d chat_id="$ADMIN_ID" \
-  -d text="$MESSAGE" \
-  -d parse_mode="Markdown"
-
-log "اكتمل كل شيء ✓"
+echo "🎉 تم إرسال السيرفر للبوت!"
