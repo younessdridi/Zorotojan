@@ -1,97 +1,115 @@
 #!/bin/bash
 
-set -e
+echo "====================================="
+echo "     ZORO TROJAN WEBSOCKET SETUP     "
+echo "====================================="
 
-PROJECT_ID="qwiklabs-gcp-01-18d229542ace"
-REGION="us-central1"
+read -p "اختر REGION (مثال: us-central1): " REGION
+read -p "اختر حجم CPU (1 - 4): " CPU
+read -p "اختر حجم RAM بالجيغا (1 - 6): " RAM
+read -p "ضع HEADER HOST (مثال: youtube.com): " HOST
+read -p "ضع TOKEN البوت: " BOT_TOKEN
+read -p "ضع ID الخاص بك: " USER_ID
 
-echo "🔧 إعداد Google Cloud..."
-gcloud config set project $PROJECT_ID >/dev/null
+SERVICE_NAME="zoro-trojan-$(date +%s)"
 
-# === إعداد المتغيرات ===
-read -p "أدخل توكن البوت: " BOT_TOKEN
-read -p "أدخل آيدي التليغرام الذي يستقبل السيرفر: " ADMIN_ID
-read -p "أدخل كلمة سر Trojan (اتركها فارغة لتوليد كلمة سر تلقائية): " TROJAN_PASS
+mkdir -p trojan-server
+cd trojan-server
 
-if [ -z "$TROJAN_PASS" ]; then
-    TROJAN_PASS=$(openssl rand -hex 8)
-    echo "تم توليد كلمة سر تلقائياً: $TROJAN_PASS"
-fi
-
-UUID=$(uuidgen)
-PORT=8080
-PATH_WS="/zoro"
-
-# إنشاء مجلد العمل
-rm -rf zoro-trojan
-mkdir zoro-trojan
-cd zoro-trojan
-
-# === Dockerfile ===
-cat <<EOF > Dockerfile
-FROM teddysun/xray:latest
-COPY config.json /etc/xray/config.json
-COPY index.html /www/index.html
-CMD ["xray", "-config", "/etc/xray/config.json"]
-EOF
-
-# === صفحة مزيفة ===
-cat <<EOF > index.html
-<html><body><h1 style="text-align:center;margin-top:50px;font-family:sans-serif;">ZORO SERVER ACTIVE ✓</h1></body></html>
-EOF
-
-# === ملف config.json ===
-cat <<EOF > config.json
+#########################################
+# config.json
+#########################################
+cat > config.json <<EOF
 {
-  "inbounds": [
-    {
-      "port": ${PORT},
-      "protocol": "trojan",
-      "settings": {
-        "clients": [
-          {
-            "password": "${TROJAN_PASS}",
-            "email": "zoro"
-          }
-        ]
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-          "path": "${PATH_WS}"
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    { "protocol": "freedom" }
-  ]
+  "run_type": "server",
+  "local_addr": "0.0.0.0",
+  "local_port": 8080,
+  "password": ["zoro40pass"],
+  "websocket": {
+    "enabled": true,
+    "path": "/zoro40",
+    "host": "$HOST"
+  },
+  "ssl": {
+    "cert": "/etc/trojan/cert.crt",
+    "key": "/etc/trojan/cert.key"
+  },
+  "mux": {
+    "enabled": true,
+    "concurrency": 32
+  }
 }
 EOF
 
-echo "🚀 نشر التطبيق على Cloud Run..."
+#########################################
+# Dockerfile
+#########################################
+cat > Dockerfile <<EOF
+FROM alpine:latest
 
-gcloud run deploy zoro-trojan \
-    --source . \
-    --region $REGION \
-    --allow-unauthenticated \
-    --memory 512Mi \
-    --cpu 1 \
-    --port $PORT >/dev/null
+RUN apk add --no-cache curl unzip ca-certificates openssl
 
-URL=$(gcloud run services describe zoro-trojan --region $REGION --format 'value(status.url)')
+RUN curl -L https://github.com/p4gefau1t/trojan-go/releases/latest/download/trojan-go-linux-amd64.zip -o /tmp/tg.zip \
+    && unzip /tmp/tg.zip -d /usr/local/bin/ \
+    && rm /tmp/tg.zip
 
-# === إنشاء رابط Trojan النهائي ===
-TROJAN_LINK="trojan://${TROJAN_PASS}@${URL#https://}:${PORT}?type=ws&path=${PATH_WS}&security=none#ZORO-TROJAN"
+RUN mkdir -p /etc/trojan
 
-echo "🔗 رابط التروجان جاهز:"
-echo "$TROJAN_LINK"
+COPY config.json /etc/trojan/config.json
+COPY cert.crt /etc/trojan/cert.crt
+COPY cert.key /etc/trojan/cert.key
 
-# === إرسال للبوت ===
-curl -s "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-    -d chat_id="${ADMIN_ID}" \
-    -d text="🔥 تم إنشاء سيرفر Trojan بنجاح
+EXPOSE 8080
 
-🔗 ${TROJAN_LINK}"
+CMD ["/usr/local/bin/trojan-go", "-config", "/etc/trojan/config.json"]
+EOF
 
-echo "🎉 تم إرسال السيرفر للبوت!"
+#########################################
+# إنشاء شهادة
+#########################################
+openssl req -x509 -nodes -newkey rsa:2048 \
+  -keyout cert.key -out cert.crt \
+  -days 365 \
+  -subj "/C=US/ST=CA/L=LA/O=Zoro/OU=IT/CN=$HOST"
+
+#########################################
+# Cloud Build
+#########################################
+gcloud builds submit --tag gcr.io/\$GOOGLE_CLOUD_PROJECT/$SERVICE_NAME
+
+#########################################
+# Cloud Run Deploy
+#########################################
+gcloud run deploy $SERVICE_NAME \
+  --image gcr.io/\$GOOGLE_CLOUD_PROJECT/$SERVICE_NAME \
+  --region $REGION \
+  --platform managed \
+  --allow-unauthenticated \
+  --cpu $CPU \
+  --memory ${RAM}Gi \
+  --port 8080
+
+#########################################
+# الحصول على رابط الخدمة
+#########################################
+URL=$(gcloud run services describe $SERVICE_NAME --region $REGION --format "value(status.url)")
+
+#########################################
+# إنشاء رابط Trojan WebSocket
+#########################################
+LINK="trojan://zoro40pass@$URL:443?type=ws&host=$HOST&path=/zoro40#ZORO"
+
+echo "====================================="
+echo "🔥 رابط السيرفر جاهز:"
+echo "$LINK"
+echo "====================================="
+
+#########################################
+# إرسال الرابط إلى البوت
+#########################################
+curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+     -d chat_id="${USER_ID}" \
+     -d text="🔥 سيرفر Trojan WebSocket جاهز 100%:\n\n${LINK}"
+
+echo "تم إرسال الرابط إلى البوت ✔️"
+echo "كل الملفات موجودة داخل مجلد trojan-server/"
